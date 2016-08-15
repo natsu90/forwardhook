@@ -9,24 +9,25 @@ import (
 	"os"
 	"strings"
 	"time"
+	"net/url"
 )
 
 // maxRetries indicates the maximum amount of retries we will perform before
 // giving up
-var maxRetries = 10
+var maxRetries = 1
 
 // mirrorRequest will POST through body and headers from an
 // incoming http.Request.
 // Failures are retried up to 10 times.
-func mirrorRequest(h http.Header, body []byte, url string) {
+func mirrorRequest(h http.Header, body []byte, u string) {
 	attempt := 1
 	for {
-		fmt.Printf("Attempting %s try=%d\n", url, attempt)
+		fmt.Printf("Attempting %s try=%d\n", u, attempt)
 
 		client := &http.Client{}
 
 		rB := bytes.NewReader(body)
-		req, err := http.NewRequest("POST", url, rB)
+		req, err := http.NewRequest("POST", u, rB)
 		if err != nil {
 			log.Println("[error] http.NewRequest:", err)
 		}
@@ -40,7 +41,7 @@ func mirrorRequest(h http.Header, body []byte, url string) {
 			time.Sleep(10 * time.Second)
 		} else {
 			resp.Body.Close()
-			fmt.Printf("[success] %s status=%d\n", url, resp.StatusCode)
+			fmt.Printf("[success] %s status=%d\n", u, resp.StatusCode)
 			break
 		}
 
@@ -56,13 +57,12 @@ func mirrorRequest(h http.Header, body []byte, url string) {
 // There is no validation at the moment but you can add 1 or more sites,
 // separated by commas.
 func parseSites() []string {
-	sites := os.Getenv("FORWARDHOOK_SITES")
 
-	if sites == "" {
-		log.Fatal("No sites set up, provide FORWARDHOOK_SITES")
-	}
+	contents, _ := ioutil.ReadFile("sites")
+	sites := strings.TrimSpace(string(contents))
 
-	s := strings.Split(sites, ",")
+	s := strings.Split(sites, "\n")
+
 	return s
 }
 
@@ -79,12 +79,24 @@ func handleHook(sites []string) http.Handler {
 		}
 		r.Body.Close()
 
-		for _, url := range sites {
-			go mirrorRequest(r.Header, rB, url)
+		q := r.URL.Query()
+
+		for _, site := range sites {
+			u, _ := url.Parse(site)
+			u.RawQuery = q.Encode()
+			go mirrorRequest(r.Header, rB, u.String())
 		}
 
 		w.WriteHeader(http.StatusOK)
 	})
+}
+
+func determineListenAddress() (string, error) {
+ 	port := os.Getenv("PORT")
+	if port == "" {
+    	return ":8001", nil
+  	}
+  	return ":" + port, nil
 }
 
 func main() {
@@ -93,8 +105,10 @@ func main() {
 
 	http.Handle("/", handleHook(sites))
 
-	fmt.Printf("Listening on port 8000\n")
-	err := http.ListenAndServe(":8000", nil)
+	port, _ := determineListenAddress()
+
+	fmt.Printf("Listening on port %s \n", port)
+	err := http.ListenAndServe(port, nil)
 	if err != nil {
 		log.Fatal(err)
 	}
